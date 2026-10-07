@@ -15,7 +15,7 @@ const seedAdmin = async () => {
   const admin = new Admin({
     userName: process.env.ADMIN_USERNAME,
     password: passwordHash,
-    contactNumber: 1234567890,
+    contactNumber: process.env.CONTACT_NUMBER,
   });
   await admin.save();
   console.log("Admin data seeded..");
