@@ -11,6 +11,7 @@ import createAuditLog from "../utils/createAuditLog.js";
 import { PodSlip } from "../model/PodSlip.model.js";
 import cloudinary from "../config/cloudinary.js";
 import { calcBox, calcTotals, MAX_PACKAGES } from "../utils/weight.js";
+import { normalizeItemName } from "../utils/normalizeItemName.js";
 const pickupRouter = Router();
 
 //calculate
@@ -92,7 +93,7 @@ pickupRouter.put(
   async (req, res) => {
     try {
       const job = req.job;
-      const { packages, packingStatus} = req.body;
+      const { packages, packingStatus } = req.body;
 
       if (
         !Array.isArray(packages) ||
@@ -135,15 +136,16 @@ pickupRouter.put(
           )
             return res.status(400).json({ message: "Invalid item" });
 
-          const nameKey = it.itemName.trim().toLowerCase().replace(/\s+/g, " ");
+          const itemName = normalizeItemName(it.itemName);
+          const nameKey = itemName.toLowerCase();
           if (seenNames.has(nameKey))
             return res.status(400).json({
-              message: `"${it.itemName.trim()}" is listed more than once in a box`,
+              message: `"${itemName}" is listed more than once in a box`,
             });
           seenNames.add(nameKey);
 
           itemDocs.push({
-            itemName: it.itemName.trim(),
+            itemName,
             quantity,
             fragile: !!it.fragile,
             jobId: job._id,
@@ -180,7 +182,10 @@ pickupRouter.get(
   userAuth,
   async (req, res) => {
     try {
-      const suggestions = await JobItem.distinct("itemName");
+      const names = await JobItem.distinct("itemName");
+      const suggestions = [
+        ...new Set(names.map(normalizeItemName).filter(Boolean)),
+      ].sort((a, b) => a.localeCompare(b));
       res.status(200).json({ message: "Fetched successfully", suggestions });
     } catch (error) {
       res
