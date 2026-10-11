@@ -11,6 +11,8 @@ import { PodSlip } from "../model/PodSlip.model.js";
 import { Shipment } from "../model/Shipment.model.js";
 import pdfQueue from "../queues/pdfQueue.js";
 const jobRouter = Router();
+import { buildJobFilter } from "../utils/jobFilter.js";
+import { toCsv, formatDateTime } from "../utils/csv.js";
 
 //create new-job
 jobRouter.post("/api/jobs/new-job", userAuth, isAdmin, async (req, res) => {
@@ -104,32 +106,11 @@ jobRouter.post("/api/jobs/new-job", userAuth, isAdmin, async (req, res) => {
 //all jobs
 jobRouter.get("/api/jobs", userAuth, isAdmin, async (req, res) => {
   try {
-    const { status, assignedToId, fromDate, toDate, clientName } = req.query;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const filter = { isArchived: { $ne: true } };
-
-    if (status === "Open") {
-      filter.status = { $in: ["Created", "Assigned", "PickedUp", "AtOffice"] };
-    } else if (status === "Completed") {
-      filter.status = { $in: ["Dispatched"] };
-    } else if (status) {
-      filter.status = status;
-    }
-
-    if (assignedToId) filter.assignedToId = assignedToId;
-    if (clientName) filter.clientName = { $regex: clientName, $options: "i" };
-    if (fromDate || toDate) {
-      filter.createdAt = {};
-      if (fromDate) filter.createdAt.$gte = new Date(fromDate);
-      if (toDate) {
-        const end = new Date(toDate);
-        end.setUTCHours(23, 59, 59, 999);
-        filter.createdAt.$lte = end;
-      }
-    }
+    const filter = buildJobFilter(req.query);
 
     const [totalJobs, totalCount] = await Promise.all([
       Job.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
@@ -145,6 +126,71 @@ jobRouter.get("/api/jobs", userAuth, isAdmin, async (req, res) => {
     });
   } catch (err) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+const MAX_EXPORT_ROWS = 10000;
+
+const sum = (packages, field) =>
+  (packages || []).reduce((total, p) => total + (Number(p[field]) || 0), 0);
+const kg = (n) => (n ? n.toFixed(2) : "");
+
+const EXPORT_COLUMNS = [
+  { header: "Created", value: (j) => formatDateTime(j.createdAt) },
+  { header: "Job ID", value: (j) => j._id },
+  { header: "Client Name", value: (j) => j.clientName },
+  { header: "Client Number", value: (j) => j.clientNumber },
+  { header: "Client Address", value: (j) => j.clientAddress },
+  { header: "Client Area", value: (j) => j.clientCity },
+  { header: "Partner", value: (j) => j.assignedTo },
+  { header: "Network", value: (j) => j.networkName },
+  { header: "Status", value: (j) => j.status },
+  { header: "Locked", value: (j) => (j.locked ? "Yes" : "No") },
+  { header: "Receiver Name", value: (j) => j.receiverName },
+  { header: "Receiver Number", value: (j) => j.receiverNumber },
+  { header: "Receiver Address", value: (j) => j.receiverAddress },
+  { header: "Receiver City", value: (j) => j.receiverCity },
+  { header: "Receiver Zip", value: (j) => j.receiverZipCode },
+  { header: "Receiver Country", value: (j) => j.receiverCountry },
+  { header: "Boxes", value: (j) => (j.packages || []).length || "" },
+  {
+    header: "Actual Weight (kg)",
+    value: (j) => kg(sum(j.packages, "actualWeight")),
+  },
+  {
+    header: "Volumetric Weight (kg)",
+    value: (j) => kg(sum(j.packages, "volWeight")),
+  },
+  {
+    header: "Chargeable Weight (kg)",
+    value: (j) => kg(sum(j.packages, "weight")),
+  },
+  { header: "Price", value: (j) => j.price },
+  { header: "Payment Status", value: (j) => j.paymentStatus },
+  { header: "Payment Method", value: (j) => j.paymentMethod },
+  { header: "Packing Status", value: (j) => j.packingStatus },
+  { header: "Dispatched At", value: (j) => j.dispatchedAt },
+];
+
+//csv 
+jobRouter.get("/api/jobs/export/csv", userAuth, isAdmin, async (req, res) => {
+  try {
+    const jobs = await Job.find(buildJobFilter(req.query))
+      .sort({ createdAt: -1 })
+      .limit(MAX_EXPORT_ROWS)
+      .lean();
+
+    const today = new Date().toISOString().slice(0, 10);
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="jobs-${today}.csv"`,
+    );
+    res.status(200).send(toCsv(EXPORT_COLUMNS, jobs));
+  } catch (err) {
+    res
+      .status(400)
+      .json({ message: "Failed to export jobs", error: err.message });
   }
 });
 
